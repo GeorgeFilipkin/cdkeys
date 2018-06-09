@@ -1,17 +1,23 @@
 #!/bin/bash
-# option cycle dirstack in visiting order with no regard to current working dir
-# option to fill history from .history (what about relatives like cd /etc; cd ./ssh?)
-#   can keep pwd_history in a separate file and cycle it like a true history
-# cdkeys.zsh cdkeys.bash
 
 # so basically enter starts new side cycle and saves pwd or new down cycle. that's it
-# starts with 1 to skip current dir, but keep the dir in cycle
 
-#declare _ck_include_hidden=false
+#declare cdkeys_include_hidden=false
+# starts with 1 to skip current dir, but keep the dir in cycle
 declare -i _ck_down_index=1 
 declare -i _ck_side_index=1
 declare _ck_next=true  # whether to start new cycle or keep cycling this one
 declare _ck_prev=''
+declare -a HSSTACK
+declare -i _ck_hsstack_length=0
+
+
+_ck_load_hs () {
+    HSSTACK=($(cat ~/.cdkeys_history | uniq))
+    _ck_hsstack_length="${#HSSTACK[@]}"
+    echo $_ck_hsstack_length
+} && _ck_load_hs
+
 
 _ck_pushd() {
     #echo 'pushd'
@@ -20,9 +26,17 @@ _ck_pushd() {
     if [[ ! " ${DIRSTACK[@]:1} " =~ " ${q} " ]]; then
         pushd -n "$q" &>/dev/null
     fi
-}
 
-_ck_pushd "$PWD"
+    # if last dirstack element is not equal to q (will avoid adjusent same elemets)
+    echo ${#HSSTACK[@]}
+    if [[ ${#HSSTACK[@]} -eq 0 || "${HSSTACK[-1]}" != "$q" ]]; then
+    #if [[ "${HSSTACK[-1]}" != "$q" ]]; then
+        echo "adding $q to HSSTACK"
+        HSSTACK+=("$q")
+        printf '%s\n' "${HSSTACK[@]}"
+    fi
+} && _ck_pushd "$PWD"
+
 
 _ck_reorder() {
     #echo "order $1"
@@ -42,11 +56,8 @@ _ck_reorder() {
 
 
 cd() {
-    #[[ $_ck_next = true ]] && _ck_pushd "$PWD"  # save only next pwd && up
-    [[ $_ck_next = true ]] && { _ck_reorder "$PWD" || _ck_pushd "$PWD"; } # save only next pwd && up
-    #_ck_pushd "$PWD"  # save any pwd && up
-    builtin cd "$@" && { _ck_reorder "$PWD" || _ck_pushd "$PWD"; }
-    #builtin cd "$@" && _ck_pushd "$PWD" && _ck_reorder "$PWD" 
+    [[ $_ck_next = true ]] && { _ck_reorder "$PWD" || _ck_pushd "$PWD"; } # save only next pwd
+    builtin cd "$@" && { _ck_reorder "$PWD" || _ck_pushd "$PWD"; } # save any pwd
     _ck_down_index=1
     _ck_side_index=1
 }
@@ -67,24 +78,56 @@ _ck_down() {
 
     #echo "|${_ck_data[@]}|"
 
-    if [[ "$1" == 'SKIP' ]]; then
-        for i in "${_ck_data[@]:$_ck_down_index}"; do
-            ((_ck_down_index++))
-            #echo "    |$i|$_ck_pwd | $_ck_down_index | $_ck_next"
-            #if [[ "$i" == "$_ck_pwd"* ]]; then 
-            if [[ "$i" == "$_ck_pwd/"* ]]; then 
-                #echo 'found'
-                eval "builtin cd $i"
-                break
-            fi
-        done
-    else
-        # TODO otion to belo
-        # cycle in visiting order
-        # this just cycles all in stack with no regard to current working dir
-        #eval "builtin cd $(printf %q ${_ck_data[$_ck_down_index]})"
-        eval "builtin cd ${_ck_data[$_ck_down_index]}"
+    for i in "${_ck_data[@]:$_ck_down_index}"; do
         ((_ck_down_index++))
+        #echo "    |$i|$_ck_pwd | $_ck_down_index | $_ck_next"
+        if [[ "$i" == "$_ck_pwd/"* ]]; then
+            #echo 'found'
+            eval "builtin cd $i"
+            break
+        fi
+    done
+
+    [[ $_ck_down_index -eq "${#_ck_data[@]}" ]] && _ck_down_index=0
+    IFS="$_ck_old_IFS"
+    _ck_prev='down'
+}
+
+
+
+
+_ck_save_hs() {
+    [[ "${#HSSTACK[@]}" -le 1 ]] && echo 'return' return
+    printf '%s\n' "${HSSTACK[@]:$_ck_hsstack_length}" | uniq >> ~/.cdkeys_history
+}
+
+
+trap _ck_save_hs SIGINT SIGTERM SIGQUIT SIGKILL EXIT
+
+_ck_hs() {
+    _ck_side_index=1
+    _ck_old_IFS="$IFS"
+    IFS=$'\n'
+    if [[ $_ck_next = true || $_ck_prev != 'down' ]]; then
+        #echo 'next'
+        printf -v _ck_pwd %q "$PWD"
+        _ck_next=false
+    fi
+
+    #_ck_data=($(dirs -p -l | tail +2))
+    #[[ "${#_ck_data[@]}" -eq 1 ]] && return
+
+    #echo "|${_ck_data[@]}|"
+
+    if [[ "$1" == 'forward' ]]; then
+        # TODO otion to below
+        # cycle in visiting order by pwd_history file
+        # atm this just cycles all in stack with no regard to current working dir
+        #eval "builtin cd ${_ck_data[$_ck_down_index]}"
+        #((_ck_down_index++))
+        echo forward
+    else
+        echo backward
     fi
 
     [[ $_ck_down_index -eq "${#_ck_data[@]}" ]] && _ck_down_index=0
@@ -121,10 +164,6 @@ _ck_side() {
 
     [[ "$1" == 'right' && $_ck_prev == 'left' ]] && ((_ck_side_index++))
 
-    #printf -v t "cd $_ck_pwd/%q" "${_ck_data[$_ck_side_index]}"
-    #eval $t
-    #echo "$t"
-    #builtin cd "$_ck_pwd/$t"
     eval "builtin cd $_ck_pwd/$(printf %q ${_ck_data[$_ck_side_index]})"
 
     if [[ "$1" == 'right' ]]; then
@@ -154,6 +193,12 @@ bind '"\C-_up": "\C-__up\C-j"'
 bind -x '"\C-__down"':"_ck_down"
 bind '"\C-_down": "\C-__down\C-__j"'
 
+# hs
+bind -x '"\C-__forward"':"_ck_hs forward"
+bind '"\C-_forward": "\C-__forward\C-__j"'
+bind -x '"\C-__backward"':"_ck_hs backward"
+bind '"\C-_backward": "\C-__backward\C-__j"'
+
 # side
 bind -x '"\C-__left"':"_ck_side left"
 bind '"\C-_left": "\C-__left\C-__j"'
@@ -167,3 +212,6 @@ bind '"\e[1;3A": "\C-_up"'
 bind '"\e[1;3B": "\C-_down"'
 bind '"\e[1;3D": "\C-_left"'
 bind '"\e[1;3C": "\C-_right"'
+
+#bind '"\C-n": "\C-_forward"'
+#bind '"\C-p": "\C-_backward"'
